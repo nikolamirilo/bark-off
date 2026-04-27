@@ -29,7 +29,7 @@ export function StatsRow() {
               resizeMode="contain"
             />
             <Text style={styles.value}>{todaysBarks}</Text>
-            <Text style={styles.label}>Today's Woofs</Text>
+            <Text style={styles.label}>Today&apos;s Woofs</Text>
           </LinearGradient>
         </Card>
       </View>

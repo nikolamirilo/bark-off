@@ -127,7 +127,7 @@ export default function ReportsScreen() {
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.title}>{DogText.reportsTitle}</Text>
-                <Text style={styles.subtitle}>Track your pet's progress!</Text>
+                <Text style={styles.subtitle}>Track your pet&apos;s progress!</Text>
             </View>
 
             {/* Weekly Summary */}

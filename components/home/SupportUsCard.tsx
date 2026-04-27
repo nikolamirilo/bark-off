@@ -13,6 +13,7 @@ import {
   Text,
   TouchableOpacity,
 } from "react-native";
+import { customEvent } from "vexo-analytics";
 
 const BUY_ME_A_COFFEE_URL = "https://www.buymeacoffee.com/reactify.solutions";
 
@@ -25,7 +26,13 @@ export function SupportUsCard() {
       </Text>
       <TouchableOpacity
         style={styles.button}
-        onPress={() => Linking.openURL(BUY_ME_A_COFFEE_URL)}
+        onPress={() => {
+          customEvent("buy-coffee-clicked", {
+            screen: "home",
+            placement: "card",
+          });
+          Linking.openURL(BUY_ME_A_COFFEE_URL);
+        }}
         activeOpacity={0.8}
       >
         <Text style={styles.emoji}>☕</Text>

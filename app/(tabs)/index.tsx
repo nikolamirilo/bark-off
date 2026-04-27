@@ -10,6 +10,7 @@ import { useRecordings, useSettings } from "@/store/appStore";
 import { useRouter } from "expo-router";
 import React from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { customEvent } from "vexo-analytics";
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -25,6 +26,12 @@ export default function HomeScreen() {
     const missingLevels = requiredLevels.filter(
       (level) => !recordings.some((r) => r.level === level),
     );
+
+    customEvent("go-pressed", {
+      screen: "home",
+      has_recordings_ready: missingLevels.length === 0,
+      missing_levels_count: missingLevels.length,
+    });
 
     if (missingLevels.length > 0) {
       Alert.alert(

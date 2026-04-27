@@ -21,7 +21,7 @@ export function DailyTipCard() {
           <Text style={styles.title}>Paw-some Tip</Text>
         </View>
         <Text style={styles.text}>
-          Dogs respond best to their human's voice. Try recording a calming
+          Dogs respond best to their human&apos;s voice. Try recording a calming
           message in Settings! 🎙️
         </Text>
       </LinearGradient>

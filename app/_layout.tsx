@@ -11,6 +11,7 @@ import { Stack, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { useEffect, useState } from "react";
 import "react-native-reanimated";
+import { vexo } from "vexo-analytics";
 
 const BarkOffLightTheme = {
   ...DefaultTheme,
@@ -39,6 +40,8 @@ const BarkOffDarkTheme = {
 export const unstable_settings = {
   anchor: "(tabs)",
 };
+
+vexo("acf40163-1aff-4be9-bcb5-d42dc2b4ea10");
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
@@ -101,10 +104,7 @@ export default function RootLayout() {
         />
       </Stack>
       <StatusBar style="auto" />
-      <TutorialModal
-        visible={tutorialVisible}
-        onClose={handleTutorialClose}
-      />
+      <TutorialModal visible={tutorialVisible} onClose={handleTutorialClose} />
     </ThemeProvider>
   );
 }

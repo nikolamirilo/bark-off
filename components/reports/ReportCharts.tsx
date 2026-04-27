@@ -179,7 +179,7 @@ export function ImprovementIndicator({ comparison }: ImprovementIndicatorProps) 
                 <Text style={styles.improvementEmoji}>🐶</Text>
                 <Text style={styles.improvementTitle}>First Session!</Text>
                 <Text style={styles.improvementText}>
-                    Keep tracking to see your pet's progress!
+                    Keep tracking to see your pet&apos;s progress!
                 </Text>
             </View>
         );

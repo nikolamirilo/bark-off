@@ -20,7 +20,7 @@ export default function SettingsScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.header}>
         <Text style={styles.title}>{DogText.settingsTitle}</Text>
-        <Text style={styles.subtitle}>Customize your pet's experience!</Text>
+        <Text style={styles.subtitle}>Customize your pet&apos;s experience!</Text>
       </View>
 
       <PetProfileCard />

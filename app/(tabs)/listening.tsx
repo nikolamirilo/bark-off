@@ -31,6 +31,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { customEvent } from "vexo-analytics";
 
 export default function ListeningScreen() {
   const router = useRouter();
@@ -91,6 +92,13 @@ export default function ListeningScreen() {
     setShowTips(true);
   };
 
+  const getElapsedMs = (startedAt?: Date, endedAt?: Date) => {
+    if (!startedAt) return 0;
+    const start = new Date(startedAt).getTime();
+    const end = endedAt ? new Date(endedAt).getTime() : Date.now();
+    return Math.max(0, end - start);
+  };
+
   const handleStart = async () => {
     // Validate that we have recordings for all defined levels
     const requiredLevels = Array.from(
@@ -130,6 +138,13 @@ export default function ListeningScreen() {
       startSession();
       setIsActive(true);
       setSessionStats({ barkCount: 0, soundsPlayed: 0 });
+
+      const startedSession = useAppStore.getState().currentSession;
+      customEvent("session-start", {
+        screen: "listening",
+        source: "button",
+        session_id: startedSession?.id,
+      });
     } catch (error) {
       Alert.alert(
         "Ruh-roh! 🐶",
@@ -140,9 +155,11 @@ export default function ListeningScreen() {
     }
   };
 
-  const handleStop = async () => {
+  const handleStop = async (reason: "user_stop" | "app_background") => {
     // Prevent duplicate calls (e.g. from effect cleanup)
     if (!useAppStore.getState().isListening) return;
+
+    const sessionBeforeStop = useAppStore.getState().currentSession;
 
     try {
       // Allow screen to sleep again
@@ -194,13 +211,32 @@ export default function ListeningScreen() {
       reportId,
     });
     setShowCompleteModal(true);
+
+    customEvent("session-end", {
+      screen: "listening",
+      session_id: sessionBeforeStop?.id,
+      reason,
+      elapsed_ms: getElapsedMs(sessionBeforeStop?.startedAt, new Date()),
+      bark_count: sessionBeforeStop?.events?.length ?? 0,
+    });
+  };
+
+  const handleStopFromUser = async () => {
+    const session = useAppStore.getState().currentSession;
+    customEvent("stop-session-pressed", {
+      screen: "listening",
+      session_id: session?.id,
+      reason: "user_stop",
+      elapsed_ms: getElapsedMs(session?.startedAt, new Date()),
+    });
+    await handleStop("user_stop");
   };
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (isActive) {
-        handleStop();
+        handleStop("app_background");
       }
     };
   }, [isActive]);
@@ -301,7 +337,7 @@ export default function ListeningScreen() {
           {isActive ? (
             <Button
               title={DogText.stopListening}
-              onPress={handleStop}
+              onPress={handleStopFromUser}
               variant="danger"
               size="large"
               style={styles.actionButton}
@@ -322,7 +358,7 @@ export default function ListeningScreen() {
           <Card style={styles.instructionsCard}>
             <Text style={styles.instructionsTitle}>How it works 🐾</Text>
             <Text style={styles.instructionsText}>
-              1. Tap "Start" to begin listening{"\n"}
+              1. Tap &quot;Start&quot; to begin listening{"\n"}
               2. BarkOff will detect when your pet barks{"\n"}
               3. Calming sounds play automatically{"\n"}
               4. View detailed reports after each session
@@ -345,7 +381,7 @@ export default function ListeningScreen() {
             <View style={styles.tipItem}>
               <Text style={styles.tipItemIcon}>🔊</Text>
               <Text style={styles.tipItemText}>
-                Make sure your phone's sound is turned on and volume is up
+                Make sure your phone&apos;s sound is turned on and volume is up
               </Text>
             </View>
 
