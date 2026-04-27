@@ -1,0 +1,74 @@
+{
+  "expo": {
+    "name": "BarkOff",
+    "slug": "bark-off",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/logo.jpeg",
+    "scheme": "bark-off",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "BarkOff needs microphone access to listen for your dog's barks and play calming sounds.",
+        "UIBackgroundModes": [
+          "audio"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#181822",
+        "foregroundImage": "./assets/images/logo.jpeg"
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.reactifysolutions.pawpal"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/logo.jpeg",
+          "imageWidth": 200,
+          "backgroundColor": "#181822",
+          "resizeMode": "contain"
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "BarkOff needs microphone access to listen for your dog's barks."
+        }
+      ],
+      "expo-audio",
+      "expo-video",
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 25
+          }
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "1c40c241-b7d7-4272-924b-332a5c8552c4"
+      }
+    },
+    "owner": "reactifysolutions"
+  }
+}
