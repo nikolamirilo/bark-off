@@ -1,50 +1,112 @@
-# Welcome to your Expo app 👋
+# BarkOff
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+**BarkOff** is a React Native (Expo) app that listens for dog barks and automatically plays calming sounds. It also tracks listening sessions and shows reports/analytics.
 
-## Get started
+## Features
 
-1. Install dependencies
+- **Bark detection**: Uses the device microphone with audio metering (dBFS) to detect bark intensity levels.
+- **Auto-response**: Plays a selected calming recording per detected level (with a configurable cooldown).
+- **Session tracking**: Logs bark events during a listening session.
+- **Reports**: Visual breakdown of sessions/events (charts).
+- **Customization**: Pet profile, sensitivity, thresholds, cooldown, and per-level sound recordings.
 
-   ```bash
-   npm install
-   ```
+## Tech stack
 
-2. Start the app
+- **Expo SDK**: 54
+- **React Native**: 0.81.5
+- **TypeScript**: ~5.9
+- **Navigation**: Expo Router (file-based routing)
+- **State**: Zustand + AsyncStorage persistence
+- **Audio**: `expo-av` / `expo-audio`
+- **Charts**: `react-native-chart-kit`
 
-   ```bash
-   npx expo start
-   ```
+## Project structure
 
-In the output, you'll find options to open the app in a
+- **Routes**: `app/`
+  - Tabs: `app/(tabs)/index.tsx`, `reports.tsx`, `settings.tsx`
+  - Listening mode: `app/(tabs)/listening.tsx` (hidden from the tab bar)
+  - Session report: `app/session-report/[id].tsx`
+- **Bark detection logic**: `services/barkHandler.ts`
+- **Audio recording/playback**: `services/audioService.ts`
+- **Persisted app state**: `store/appStore.ts`
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Getting started
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### Prerequisites
 
-## Get a fresh project
+- Node.js + npm
+- Expo CLI (recommended via `npx expo ...`)
 
-When you're ready, run:
+### Install
+
+```bash
+npm install
+```
+
+### Run (development)
+
+```bash
+npm run start
+```
+
+Then open on:
+- **Expo Go** (quickest iteration)
+- **Android emulator / iOS simulator**
+- **Development build** (recommended if you hit Expo Go limitations with audio behavior)
+
+Useful scripts (from `package.json`):
+
+```bash
+npm run start
+npm run android
+npm run ios
+npm run web
+npm run lint
+```
+
+## Permissions & background audio
+
+This app requires microphone access to detect barks:
+
+- **iOS**: `NSMicrophoneUsageDescription` is configured in `app.json`.
+- **Android**: requests:
+  - `android.permission.RECORD_AUDIO`
+  - `android.permission.MODIFY_AUDIO_SETTINGS`
+
+Background audio mode is enabled on iOS (`UIBackgroundModes: ["audio"]`) so listening/playback can continue when appropriate.
+
+## Builds (EAS)
+
+This project includes `eas.json` with `development`, `preview`, and `production` profiles.
+
+### Preview APK (Android)
+
+```bash
+eas build -p android --profile preview
+```
+
+### Development build (internal distribution)
+
+```bash
+eas build --profile development
+```
+
+### Production (AAB)
+
+```bash
+eas build -p android --profile production
+```
+
+## Troubleshooting
+
+- **Microphone permission denied**: Ensure permission prompts are accepted in the OS settings, then restart the app.
+- **No sound plays on detection**: Add recordings in **Settings** first (the bark handler preloads recordings from the persisted store).
+- **Weird audio behavior on device**: Prefer an EAS **development build** over Expo Go for more accurate audio/background behavior.
+
+## Reset starter scaffolding (optional)
+
+If you still need it, the original Expo template reset script exists:
 
 ```bash
 npm run reset-project
 ```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
