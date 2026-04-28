@@ -3,9 +3,11 @@ import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import { Linking, StyleSheet, TouchableOpacity, View } from "react-native";
 
-const CONTACT_EMAIL = "reactify.developer@gmail.com";
-const CONTACT_INSTAGRAM = "https://www.instagram.com/reactify.solutions/";
-const CONTACT_TIKTOK = "https://www.tiktok.com/@reactify.solutions";
+const CONTACT_EMAIL = "barkoffapp@gmail.com";
+const CONTACT_INSTAGRAM =
+  "https://www.instagram.com/barkoff.app?igsh=bjR6dThub3ExczU1";
+const CONTACT_TIKTOK =
+  "https://www.tiktok.com/@barkoff.app?_r=1&_t=ZS-95uV56dFMFY";
 
 export function ContactUsCard() {
   return (

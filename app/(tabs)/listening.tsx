@@ -114,7 +114,7 @@ export default function ListeningScreen() {
         "Missing Sounds 🎵",
         `Please record sounds for the following levels before starting: ${missingLevels.join(", ")}`,
         [
-          { text: "Go to Recordings", onPress: () => router.push("/explore") },
+          { text: "Go to Recordings", onPress: () => router.push("/settings") },
           { text: "Cancel", style: "cancel" },
         ],
       );
