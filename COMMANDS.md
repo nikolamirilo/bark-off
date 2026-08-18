@@ -89,6 +89,25 @@ List branches
 Configure credentials
 `eas credentials`
 
+Upload/manage the Google Service Account key used for Play Store submissions
+`eas credentials -p android` → `production` → `Google Service Account`
+
+> The key file is git-ignored and is **not** referenced from `eas.json`.
+> Upload it to EAS once so builds/submissions run non-interactively.
+
+---
+
+## 📤 Submit to stores
+
+Submit the latest Android build (internal track)
+`eas submit -p android --profile production`
+
+Build and submit in one go
+`eas build -p android --profile production --auto-submit`
+
+Submit with a local key file (instead of the EAS-hosted one)
+`eas submit -p android --profile production --service-account-key-path ./google-service-account.json`
+
 ---
 
 ## 🤖 CI / GitHub

@@ -97,11 +97,44 @@ eas build --profile development
 eas build -p android --profile production
 ```
 
+## Play Store submissions (Google Service Account)
+
+Submissions use a Google Service Account key. The key is **not** stored in this
+repository (`google-service-account.json` is git-ignored), so `eas.json` does not
+reference a local path — EAS uses the key uploaded to its servers instead.
+
+Upload the key once per project:
+
+```bash
+eas credentials -p android
+# -> production -> Google Service Account
+#    -> Manage your Google Service Account Key for Play Store Submissions
+```
+
+After that, both of these work non-interactively (CI, GitHub-triggered builds,
+`--auto-submit`):
+
+```bash
+eas submit -p android --profile production
+eas build -p android --profile production --auto-submit
+```
+
+If you prefer to submit with a local key file instead, pass it on the command
+line rather than committing a path into `eas.json`:
+
+```bash
+eas submit -p android --profile production \
+  --service-account-key-path ./google-service-account.json
+```
+
+See https://expo.fyi/creating-google-service-account for how to create the key.
+
 ## Troubleshooting
 
 - **Microphone permission denied**: Ensure permission prompts are accepted in the OS settings, then restart the app.
 - **No sound plays on detection**: Add recordings in **Settings** first (the bark handler preloads recordings from the persisted store).
 - **Weird audio behavior on device**: Prefer an EAS **development build** over Expo Go for more accurate audio/background behavior.
+- **Build fails with `File ./google-service-account.json doesn't exist`**: the key is missing on the build machine. Upload it to EAS with `eas credentials -p android` (see [Play Store submissions](#play-store-submissions-google-service-account)) — do not commit the key.
 
 ## Reset starter scaffolding (optional)
 
