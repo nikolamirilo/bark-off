@@ -1,9 +1,10 @@
-//@ts-nocheck
 import { SessionCompleteModal } from "@/components/listening/SessionCompleteModal";
+import { describeNoiseFloor } from "@/components/settings/utils";
 import {
   BarkLevelIndicator,
   SoundWave,
 } from "@/components/listening/SoundWave";
+import { BackButton } from "@/components/ui/BackButton";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import {
@@ -14,7 +15,8 @@ import {
   FontWeights,
   Spacing,
 } from "@/constants/Colors";
-import { createBarkHandler } from "@/services/barkHandler";
+import { DetectorFrame } from "@/services/barkDetector";
+import { createBarkHandler, destroyBarkHandler } from "@/services/barkHandler";
 import { generateReport } from "@/services/reportService";
 import { useAppStore } from "@/store/appStore";
 import { BarkEvent, BarkLevel } from "@/types";
@@ -31,10 +33,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { customEvent } from "vexo-analytics";
 
 export default function ListeningScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const {
     currentSession,
     startSession,
@@ -48,8 +52,9 @@ export default function ListeningScreen() {
 
   const [isActive, setIsActive] = useState(false);
   const [currentLevel, setCurrentLevel] = useState<BarkLevel | null>(null);
-  const [currentRMS, setCurrentRMS] = useState(0);
-  const [currentDBFS, setCurrentDBFS] = useState(-100);
+  /** 0-100: how close the room currently is to triggering a bark. */
+  const [triggerProgress, setTriggerProgress] = useState(0);
+  const [noiseFloorDb, setNoiseFloorDb] = useState<number | null>(null);
   const [cooldownRemaining, setCooldownRemaining] = useState(0);
   const [sessionStats, setSessionStats] = useState({
     barkCount: 0,
@@ -75,14 +80,11 @@ export default function ListeningScreen() {
     [addBarkEvent],
   );
 
-  const handleLevelChange = useCallback(
-    (level: BarkLevel | null, rms: number, dBFS: number) => {
-      setCurrentLevel(level);
-      setCurrentRMS(rms);
-      setCurrentDBFS(dBFS);
-    },
-    [],
-  );
+  const handleFrame = useCallback((frame: DetectorFrame) => {
+    setCurrentLevel(frame.level);
+    setTriggerProgress(frame.triggerProgress);
+    setNoiseFloorDb(frame.noiseFloorDb);
+  }, []);
 
   const handleCooldownUpdate = useCallback((remaining: number) => {
     setCooldownRemaining(remaining);
@@ -128,10 +130,16 @@ export default function ListeningScreen() {
       // Keep screen on while listening
       await activateKeepAwakeAsync();
 
-      const handler = createBarkHandler({
+      const handler = await createBarkHandler({
         onBarkDetected: handleBarkDetected,
-        onLevelChange: handleLevelChange,
+        onFrame: handleFrame,
         onCooldownUpdate: handleCooldownUpdate,
+        onSoundLoadError: (level) => {
+          Alert.alert(
+            "Sound missing 🎵",
+            `The clip for level ${level} could not be loaded. Re-record it in Settings.`,
+          );
+        },
       });
 
       await handler.startListening();
@@ -146,6 +154,9 @@ export default function ListeningScreen() {
         session_id: startedSession?.id,
       });
     } catch (error) {
+      // handleStop early-returns when isListening is false, so it can't undo this.
+      await deactivateKeepAwake().catch(() => {});
+      await destroyBarkHandler().catch(() => {});
       Alert.alert(
         "Ruh-roh! 🐶",
         "Could not start listening. Please check microphone permissions.",
@@ -155,7 +166,9 @@ export default function ListeningScreen() {
     }
   };
 
-  const handleStop = async (reason: "user_stop" | "app_background") => {
+  const handleStop = async (
+    reason: "user_stop" | "app_background" | "user_leave",
+  ) => {
     // Prevent duplicate calls (e.g. from effect cleanup)
     if (!useAppStore.getState().isListening) return;
 
@@ -165,28 +178,33 @@ export default function ListeningScreen() {
       // Allow screen to sleep again
       await deactivateKeepAwake();
 
-      const handler = createBarkHandler({
-        onBarkDetected: () => {},
-        onLevelChange: () => {},
-        onCooldownUpdate: () => {},
-      });
-      await handler.stopListening();
+      // Tear down the *existing* handler. The old code built a throwaway handler
+      // here, which fired the real teardown without awaiting it and then awaited
+      // a brand new empty instance instead.
+      await destroyBarkHandler();
     } catch (error) {
       console.error("Error stopping:", error);
     }
 
     setIsActive(false);
+    setCurrentLevel(null);
+    setTriggerProgress(0);
+    setNoiseFloorDb(null);
     endSession();
 
-    // Generate report if we have a session
-    // Generate report if we have a session
     const session = useAppStore.getState().currentSession;
     let reportId: string | undefined;
 
+    // Guarded: a throw in here used to skip the completion modal entirely and
+    // surface as an unhandled rejection, losing the session with no feedback.
     if (session && session.events.length > 0) {
-      const report = generateReport(session);
-      addReport(report);
-      reportId = report.id;
+      try {
+        const report = generateReport(session);
+        addReport(report);
+        reportId = report.id;
+      } catch (error) {
+        console.error("Error generating report:", error);
+      }
     }
 
     // Calculate duration string for the modal
@@ -206,11 +224,21 @@ export default function ListeningScreen() {
       stats: {
         barkCount: session ? session.events.length : 0,
         duration: finalDuration,
-        soundsPlayed: sessionStats.soundsPlayed,
+        // Counted from the session itself rather than from `sessionStats`, which
+        // this function closes over: when called from the unmount effect the
+        // closure is the one captured when the session started, so the modal
+        // always reported zero sounds played.
+        soundsPlayed: session
+          ? session.events.filter((e) => e.soundPlayed).length
+          : 0,
       },
       reportId,
     });
-    setShowCompleteModal(true);
+    // Suppressed when the user is navigating away: this screen is a tab and
+    // stays mounted, so the modal would otherwise surface over the Home screen.
+    if (reason !== "user_leave") {
+      setShowCompleteModal(true);
+    }
 
     customEvent("session-end", {
       screen: "listening",
@@ -230,6 +258,28 @@ export default function ListeningScreen() {
       elapsed_ms: getElapsedMs(session?.startedAt, new Date()),
     });
     await handleStop("user_stop");
+  };
+
+  const handleBackPress = (goBack: () => void) => {
+    if (!isActive) {
+      goBack();
+      return;
+    }
+    Alert.alert(
+      "Session in progress 🎧",
+      `${dogProfile.name || "Your pup"} is still being listened to. Stop the session and go back?`,
+      [
+        { text: "Keep Listening", style: "cancel" },
+        {
+          text: "Stop & Leave",
+          style: "destructive",
+          onPress: async () => {
+            await handleStop("user_leave");
+            goBack();
+          },
+        },
+      ],
+    );
   };
 
   // Cleanup on unmount
@@ -266,8 +316,13 @@ export default function ListeningScreen() {
     <>
       <ScrollView
         style={styles.container}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          { paddingTop: insets.top + Spacing.sm },
+        ]}
       >
+        <BackButton onPress={handleBackPress} style={styles.backButton} />
+
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title}>
@@ -282,10 +337,16 @@ export default function ListeningScreen() {
 
           {isActive && (
             <View style={styles.currentLevel}>
-              <Text style={styles.levelLabel}>Current Level</Text>
-              <Text style={styles.levelValue}>
-                {Math.max(1, Math.round(((currentDBFS + 60) / 50) * 100))}%
-              </Text>
+              {/* Shows how close the room is to triggering, not an absolute dB
+                  percentage — the old readout could sit at 60% in a silent room
+                  and told the user nothing about whether a bark was imminent. */}
+              <Text style={styles.levelLabel}>Loudness vs. trigger</Text>
+              <Text style={styles.levelValue}>{triggerProgress}%</Text>
+              {noiseFloorDb !== null && (
+                <Text style={styles.roomLabel}>
+                  Room: {describeNoiseFloor(noiseFloorDb)}
+                </Text>
+              )}
             </View>
           )}
         </Card>
@@ -450,7 +511,10 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: Spacing.lg,
-    paddingTop: Spacing.xl,
+  },
+  backButton: {
+    alignSelf: "flex-start",
+    marginBottom: Spacing.sm,
   },
   header: {
     alignItems: "center",
@@ -484,6 +548,11 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.lg,
     fontWeight: FontWeights.bold,
     color: Colors.textPrimary,
+  },
+  roomLabel: {
+    fontSize: FontSizes.xs,
+    color: Colors.textSecondary,
+    marginTop: 2,
   },
   meterCard: {
     marginBottom: Spacing.md,

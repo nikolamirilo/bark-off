@@ -37,7 +37,10 @@ const groupEventsByTimeInterval = (events: BarkEvent[], startTime: number, durat
     const intervalMs = pickBucketIntervalMs(durationSeconds);
     const totalBuckets = Math.max(Math.ceil((durationSeconds * 1000) / intervalMs), 1);
 
-    const timeGroups = new Map<number, { count: number; volumes: number[] }>();
+    const timeGroups = new Map<
+        number,
+        { count: number; volumes: number[]; snrs: number[] }
+    >();
 
     events.forEach((event) => {
         const eventTime = new Date(event.timestamp).getTime();
@@ -46,26 +49,40 @@ const groupEventsByTimeInterval = (events: BarkEvent[], startTime: number, durat
 
         const bucketIndex = Math.min(Math.floor(elapsed / intervalMs), totalBuckets - 1);
 
-        const existing = timeGroups.get(bucketIndex) || { count: 0, volumes: [] };
+        const existing =
+            timeGroups.get(bucketIndex) || { count: 0, volumes: [], snrs: [] };
         existing.count += 1;
         existing.volumes.push(event.dBFS);
+        // Reports persisted before the SNR migration have no snrDb.
+        if (typeof event.snrDb === 'number') existing.snrs.push(event.snrDb);
         timeGroups.set(bucketIndex, existing);
     });
 
     const timeline: TimelinePoint[] = [];
     for (let i = 0; i < totalBuckets; i++) {
-        const data = timeGroups.get(i) || { count: 0, volumes: [] };
+        const data = timeGroups.get(i) || { count: 0, volumes: [], snrs: [] };
         timeline.push({
             timestamp: new Date(startTime + i * intervalMs),
             barkCount: data.count,
-            avgVolume: data.volumes.length > 0
-                ? data.volumes.reduce((a, b) => a + b, 0) / data.volumes.length
-                : 0,
+            avgVolume: mean(data.volumes),
+            avgSnrDb: mean(data.snrs),
         });
     }
 
     return timeline;
 };
+
+const mean = (values: number[]): number =>
+    values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+
+/**
+ * Reduce rather than `Math.max(...values)`. Barks are no longer throttled by the
+ * cooldown before being logged, so a long overnight session can hold tens of
+ * thousands of events — enough to blow the argument-count limit and throw
+ * RangeError while generating the report.
+ */
+const max = (values: number[], fallback: number): number =>
+    values.length > 0 ? values.reduce((a, b) => (b > a ? b : a), values[0]) : fallback;
 
 // Generate report from session
 export const generateReport = (session: ListeningSession): Report => {
@@ -90,12 +107,21 @@ export const generateReport = (session: ListeningSession): Report => {
     const totalBarks = events.length;
     const soundsPlayed = events.filter((e) => e.soundPlayed).length;
 
-    // Volume stats
+    // Volume stats. SNR is the comparable figure between sessions and rooms;
+    // absolute dBFS is kept only so older reports still render.
     const volumes = events.map((e) => e.dBFS);
-    const averageVolume = volumes.length > 0
-        ? volumes.reduce((a, b) => a + b, 0) / volumes.length
-        : 0;
-    const peakVolume = volumes.length > 0 ? Math.max(...volumes) : -100;
+    const averageVolume = mean(volumes);
+    const peakVolume = max(volumes, -100);
+
+    const snrs = events
+        .map((e) => e.snrDb)
+        .filter((v): v is number => typeof v === 'number');
+    const floors = events
+        .map((e) => e.noiseFloorDb)
+        .filter((v): v is number => typeof v === 'number');
+    const averageSnrDb = mean(snrs);
+    const peakSnrDb = max(snrs, 0);
+    const averageNoiseFloorDb = mean(floors);
 
     // Level breakdown
     const levelBreakdown: Record<string, number> = {};
@@ -136,6 +162,9 @@ export const generateReport = (session: ListeningSession): Report => {
         soundsPlayed,
         averageVolume: Math.round(averageVolume * 10) / 10,
         peakVolume: Math.round(peakVolume * 10) / 10,
+        averageSnrDb: Math.round(averageSnrDb * 10) / 10,
+        peakSnrDb: Math.round(peakSnrDb * 10) / 10,
+        averageNoiseFloorDb: Math.round(averageNoiseFloorDb * 10) / 10,
         levelBreakdown,
         timeline,
         comparisonWithPrevious,

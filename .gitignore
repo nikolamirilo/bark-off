@@ -45,3 +45,6 @@ app-example
 
 # secrets
 /google-service-account.json
+
+# compiled output of `npm test`
+/test-build

@@ -22,21 +22,38 @@ export interface Recording {
 export interface BarkThreshold {
   id: string;
   name: string;
-  value: number; // RMS
+  /**
+   * dB **above the room's adaptive noise floor** required to reach this level.
+   *
+   * This used to be an absolute dBFS value, which could not work: mic AGC
+   * normalises the signal upward in quiet rooms, so absolute level doesn't track
+   * how loud the room actually is, and any single number is either deaf in a
+   * quiet bedroom or permanently triggered in a room with a TV on. Relative dB
+   * transfers between rooms. See docs/SENSITIVITY_REVIEW.md.
+   *
+   * Range 6 (very sensitive) - 24 (only loud barks). Ascending across levels.
+   */
+  value: number;
 }
 
 export interface Settings {
+  /** Ascending SNR boundaries, one per bark level. `thresholds[0]` is the trigger. */
   thresholds: BarkThreshold[];
-  cooldownSeconds: number; // Default: 10
-  sensitivity: number; // 0.5 - 2.0 multiplier
+  cooldownSeconds: number;
 }
 
 export interface BarkEvent {
   id: string;
   timestamp: Date;
-  rms: number;
-  dBFS: number;
   level: BarkLevel;
+  /** Peak absolute level of the burst, dBFS. Kept for report continuity. */
+  dBFS: number;
+  /** Peak level above the noise floor, dB. The quantity detection acts on. */
+  snrDb: number;
+  /** Noise floor when the bark started, dBFS. Reveals how noisy the room was. */
+  noiseFloorDb: number;
+  /** How long the burst lasted, ms. */
+  durationMs: number;
   soundPlayed: boolean;
   recordingId?: string;
 }
@@ -52,7 +69,10 @@ export interface ListeningSession {
 export interface TimelinePoint {
   timestamp: Date;
   barkCount: number;
+  /** Mean peak dBFS of barks in this bucket. */
   avgVolume: number;
+  /** Mean SNR (dB above the room) of barks in this bucket. */
+  avgSnrDb: number;
 }
 
 export interface Report {
@@ -65,9 +85,19 @@ export interface Report {
   totalBarks: number;
   soundsPlayed: number;
 
-  // Volume stats
+  // Volume stats.
+  //
+  // Absolute dBFS is retained for continuity with older reports, but it is not a
+  // meaningful figure to show a user: mic AGC means the same bark reads
+  // differently in different rooms. The SNR figures are the comparable ones.
   averageVolume: number; // dBFS
   peakVolume: number; // dBFS
+  /** Mean dB above the room's noise floor across all barks. */
+  averageSnrDb: number;
+  /** Loudest bark, in dB above the room's noise floor. */
+  peakSnrDb: number;
+  /** Mean noise floor across all barks — how noisy the room was. */
+  averageNoiseFloorDb: number;
 
   // Level breakdown - Dynamic keys now
   levelBreakdown: Record<string, number>; // "1", "2", "3", etc.
@@ -89,11 +119,10 @@ import { DogText } from "@/constants/Colors";
 
 export const DEFAULT_SETTINGS: Settings = {
   thresholds: [
-    { id: "1", name: DogText.levelsoftBark, value: -30 },
-    { id: "2", name: DogText.levelLoudBark, value: -15 },
+    { id: "1", name: DogText.levelsoftBark, value: 14 },
+    { id: "2", name: DogText.levelLoudBark, value: 24 },
   ],
   cooldownSeconds: 15,
-  sensitivity: 1.0,
 };
 
 export const COOLDOWN_OPTIONS = [5, 10, 15, 20, 30];

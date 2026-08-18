@@ -9,6 +9,7 @@ import {
   Spacing,
 } from "@/constants/Colors";
 import { audioService } from "@/services/audioService";
+import { normaliseExpoAvMetering } from "@/services/barkDetector";
 import { useAppStore, useRecordings, useSettings } from "@/store/appStore";
 import {
   BarkLevel,
@@ -18,9 +19,37 @@ import {
 } from "@/types";
 import Slider from "@react-native-community/slider";
 import { Audio } from "expo-av";
+import * as FileSystem from "expo-file-system/legacy";
 import React, { useEffect, useRef, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-import { dBToPercent, percentToDB } from "./utils";
+import { Alert, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import {
+  SENSITIVITY_MAX_DB,
+  SENSITIVITY_MIN_DB,
+  describeDelta,
+  describeNoiseFloor,
+  deltaToSensitivityPercent,
+} from "./utils";
+
+const IS_ANDROID = Platform.OS === "android";
+
+/**
+ * Headroom subtracted from a measured bark so the real thing comfortably clears
+ * the threshold. Calibrating exactly at the measured peak means any bark even
+ * slightly quieter than the demo one is missed.
+ */
+const CALIBRATION_MARGIN_DB = 3;
+
+/** Percentile of calibration samples treated as the room's noise floor. */
+const FLOOR_PERCENTILE = 0.25;
+
+const percentileOf = (values: number[], p: number): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.floor(p * (sorted.length - 1))),
+  );
+  return sorted[index];
+};
 
 // Display names come exclusively from DogText. Edit DogText.levelsoftBark
 // / levelLoudBark to relabel everywhere.
@@ -64,8 +93,17 @@ export function BarkLevelsAndMessagesCard() {
     : DEFAULT_SETTINGS.thresholds;
 
   const [audioActivity, setAudioActivity] = useState<AudioActivity>(null);
-  const [peakDB, setPeakDB] = useState(-160);
+  /** Mirror of audioActivity readable from async callbacks without a stale closure. */
+  const audioActivityRef = useRef<AudioActivity>(null);
+  /** Live SNR (dB above the measured room floor) during calibration. */
+  const [liveSnrDb, setLiveSnrDb] = useState(0);
   const calibrationRecordingRef = useRef<Audio.Recording | null>(null);
+  /**
+   * All normalised samples from the current calibration run. The room floor and
+   * the bark peak both come out of this one pass, which is why the user only has
+   * to do one thing: stay quiet, then bark.
+   */
+  const calibrationSamplesRef = useRef<number[]>([]);
   const [voiceRecordingDuration, setVoiceRecordingDuration] = useState(0);
   const [playingRecordingId, setPlayingRecordingId] = useState<string | null>(
     null,
@@ -74,9 +112,19 @@ export function BarkLevelsAndMessagesCard() {
   // Guard against hot-reload leaving thresholds in an invalid shape.
   useEffect(() => {
     if (!Array.isArray(thresholds)) {
-      setThresholds(DEFAULT_SETTINGS.thresholds);
+      setThresholds(DEFAULT_SETTINGS.thresholds.map((t) => ({ ...t })));
     }
   }, [thresholds]);
+
+  // Adopt the store's thresholds whenever they change underneath us. `persist`
+  // rehydrates from AsyncStorage asynchronously, so without this the card can
+  // mount showing DEFAULT_SETTINGS and then write those defaults back on the
+  // first slider release — silently discarding the user's saved sensitivity.
+  useEffect(() => {
+    if (Array.isArray(settings.thresholds)) {
+      setThresholds(settings.thresholds);
+    }
+  }, [settings.thresholds]);
 
   // Voice-recording duration ticker.
   useEffect(() => {
@@ -90,25 +138,70 @@ export function BarkLevelsAndMessagesCard() {
     return () => clearInterval(interval);
   }, [audioActivity]);
 
+  useEffect(() => {
+    audioActivityRef.current = audioActivity;
+  }, [audioActivity]);
+
   const getRecordingForLevel = (level: BarkLevel): Recording | undefined =>
     recordings.find((r) => r.level === level);
 
+  /**
+   * Stop the calibration recorder and delete its file. The clip is only ever read
+   * through the meter, never played back, so leaving it behind would accumulate
+   * ~1 MB per calibration minute in the cache.
+   */
+  const stopCalibrationRecording = async (): Promise<void> => {
+    const recording = calibrationRecordingRef.current;
+    if (!recording) return;
+    calibrationRecordingRef.current = null;
+
+    const uri = recording.getURI();
+    try {
+      recording.setOnRecordingStatusUpdate(null);
+      await recording.stopAndUnloadAsync();
+    } catch {
+      // already stopped
+    }
+    if (uri) {
+      try {
+        await FileSystem.deleteAsync(uri, { idempotent: true });
+      } catch (error) {
+        console.warn("Could not delete calibration recording:", error);
+      }
+    }
+  };
+
   // --- Sensitivity (Step 1) ---
 
-  const handleSliderChange = (index: number, value: number) => {
-    const newThresholds = [...thresholds];
-    if (index === 0) {
-      newThresholds[0] = {
-        ...newThresholds[0],
-        value: Math.min(value, percentToDB(99)),
-      };
-    } else if (index === 1) {
-      const minLevel2 = newThresholds[0].value;
-      newThresholds[1] = {
-        ...newThresholds[1],
-        value: Math.max(value, minLevel2),
-      };
-    }
+  /**
+   * Sliders run directly in dB (inverted, so dragging right = more sensitive)
+   * rather than on the 0-100 percentage. 101 percent steps map onto only 19
+   * integer dB values, so a percent-driven slider snaps the thumb backwards
+   * mid-drag; dB steps are 1:1 with what actually gets stored.
+   *
+   * The ordering guard is also expressed in dB, where soft must be the *lower*
+   * delta. The old percent-space guard collapsed at the top of the range because
+   * percentToDB(99) and percentToDB(100) both rounded to the same value.
+   */
+  const handleSliderChange = (index: number, invertedDb: number) => {
+    const deltaDb = SENSITIVITY_MAX_DB + SENSITIVITY_MIN_DB - Math.round(invertedDb);
+    const newThresholds = [...safeThresholds];
+
+    // Guard the neighbour lookups: a single-level config (or a partially migrated
+    // one) would otherwise dereference an undefined threshold and crash.
+    const lowerBound =
+      index === 0 ? SENSITIVITY_MIN_DB : newThresholds[index - 1].value + 1;
+    const upperBound =
+      index >= newThresholds.length - 1
+        ? SENSITIVITY_MAX_DB
+        : newThresholds[index + 1].value - 1;
+
+    if (lowerBound > upperBound) return;
+
+    newThresholds[index] = {
+      ...newThresholds[index],
+      value: Math.max(lowerBound, Math.min(upperBound, deltaDb)),
+    };
     setThresholds(newThresholds);
   };
 
@@ -121,8 +214,10 @@ export function BarkLevelsAndMessagesCard() {
         {
           text: "Reset",
           onPress: () => {
-            setThresholds(DEFAULT_SETTINGS.thresholds);
-            updateSettings({ thresholds: DEFAULT_SETTINGS.thresholds });
+            // Copied, so the store never aliases the module-level default object.
+            const defaults = DEFAULT_SETTINGS.thresholds.map((t) => ({ ...t }));
+            setThresholds(defaults);
+            updateSettings({ thresholds: defaults });
           },
         },
       ],
@@ -139,21 +234,14 @@ export function BarkLevelsAndMessagesCard() {
         );
         return;
       }
-      if (calibrationRecordingRef.current) {
-        try {
-          calibrationRecordingRef.current.setOnRecordingStatusUpdate(null);
-          await calibrationRecordingRef.current.stopAndUnloadAsync();
-        } catch {
-          // already stopped
-        }
-        calibrationRecordingRef.current = null;
-      }
+      await stopCalibrationRecording();
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
         staysActiveInBackground: false,
       });
-      setPeakDB(-160);
+      calibrationSamplesRef.current = [];
+      setLiveSnrDb(0);
       setAudioActivity({
         type: "calibrate",
         level: (levelIndex + 1) as BarkLevel,
@@ -165,16 +253,29 @@ export function BarkLevelsAndMessagesCard() {
       });
       calibrationRecordingRef.current = recording;
 
-      let localPeak = -160;
+      // The user can tap stop while createAsync is still in flight, in which case
+      // stopCalibration already ran and found a null ref. Shut down immediately
+      // rather than leaving the mic open until the next calibration run.
+      if (audioActivityRef.current?.type !== "calibrate") {
+        await stopCalibrationRecording();
+        return;
+      }
+
       recording.setOnRecordingStatusUpdate((status) => {
-        if (status.isRecording && status.metering !== undefined) {
-          if (status.metering > localPeak) {
-            localPeak = status.metering;
-            setPeakDB(Math.round(localPeak));
-          }
+        if (!status.isRecording || status.metering === undefined) return;
+        const db = normaliseExpoAvMetering(status.metering, IS_ANDROID);
+        if (db <= -160) return;
+
+        calibrationSamplesRef.current.push(db);
+        // Show the live SNR rather than an absolute dB percentage, so the number
+        // on screen is the same quantity the detector actually thresholds on.
+        const samples = calibrationSamplesRef.current;
+        if (samples.length >= 10) {
+          const floor = percentileOf(samples, FLOOR_PERCENTILE);
+          setLiveSnrDb(Math.max(0, Math.round(db - floor)));
         }
       });
-      await recording.setProgressUpdateInterval(100);
+      await recording.setProgressUpdateInterval(50);
     } catch (error) {
       console.error("Error starting calibration:", error);
       Alert.alert("Error", "Could not start calibration recording.");
@@ -182,57 +283,86 @@ export function BarkLevelsAndMessagesCard() {
     }
   };
 
+  /**
+   * Derive the threshold from one recording pass: the quiet part gives the room's
+   * noise floor, the loud part gives the bark peak, and the threshold is the
+   * *difference* minus a little headroom.
+   *
+   * The old version stored the absolute peak dBFS, which calibrated the mic's AGC
+   * state at that moment rather than anything about the bark — so it produced a
+   * different answer in every room and stopped matching as soon as the ambient
+   * level shifted.
+   */
   const stopCalibration = async (levelIndex: number) => {
     try {
-      const recording = calibrationRecordingRef.current;
-      if (recording) {
-        recording.setOnRecordingStatusUpdate(null);
-        await recording.stopAndUnloadAsync();
-        calibrationRecordingRef.current = null;
+      await stopCalibrationRecording();
+
+      const samples = calibrationSamplesRef.current;
+      if (samples.length < 20) {
+        Alert.alert(
+          "Need a moment longer",
+          "Hold the button, stay quiet for a second, then mimic a bark.",
+        );
+        return;
       }
 
-      if (peakDB > -160) {
-        const newThresholds = [...thresholds];
-        const otherIndex = levelIndex === 0 ? 1 : 0;
-        const otherValue = newThresholds[otherIndex].value;
+      const floorDb = percentileOf(samples, FLOOR_PERCENTILE);
+      const peakDb = samples.reduce((a, b) => (b > a ? b : a), samples[0]);
+      const measuredDelta = peakDb - floorDb;
 
-        if (levelIndex === 0 && peakDB >= otherValue) {
-          Alert.alert(
-            "Too loud",
-            `${getBarkLevelLabel(0)} must be quieter than ${getBarkLevelLabel(
-              1,
-            )} (${dBToPercent(otherValue)}%). Try a gentler sound.`,
-          );
-        } else if (levelIndex === 1 && peakDB <= newThresholds[0].value) {
-          Alert.alert(
-            "Too quiet",
-            `${getBarkLevelLabel(1)} must be louder than ${getBarkLevelLabel(
-              0,
-            )}. Try a louder sound.`,
-          );
-        } else {
-          const clampedValue = Math.max(-60, Math.min(-10, peakDB));
-          newThresholds[levelIndex] = {
-            ...newThresholds[levelIndex],
-            value: clampedValue,
-          };
-          setThresholds(newThresholds);
-          updateSettings({ thresholds: newThresholds });
-          Alert.alert(
-            "Set 🎤",
-            `${getBarkLevelLabel(levelIndex)} set to ${dBToPercent(
-              clampedValue,
-            )}%.`,
-          );
-        }
-      } else {
-        Alert.alert("Didn't hear anything", "Try again with a louder bark.");
+      if (measuredDelta < SENSITIVITY_MIN_DB + CALIBRATION_MARGIN_DB) {
+        Alert.alert(
+          "Didn't hear a bark",
+          `That was only ${Math.round(measuredDelta)} dB above the room ` +
+            `(${describeNoiseFloor(floorDb)}). Try again — stay quiet first, ` +
+            `then make a clearly louder sound.`,
+        );
+        return;
       }
+
+      const target = Math.round(measuredDelta) - CALIBRATION_MARGIN_DB;
+      const newThresholds = [...safeThresholds];
+
+      // Keep levels ordered: soft below loud.
+      const lowerBound =
+        levelIndex === 0
+          ? SENSITIVITY_MIN_DB
+          : newThresholds[levelIndex - 1].value + 1;
+      const upperBound =
+        levelIndex >= newThresholds.length - 1
+          ? SENSITIVITY_MAX_DB
+          : newThresholds[levelIndex + 1].value - 1;
+
+      if (lowerBound > upperBound) {
+        Alert.alert(
+          "No room left",
+          `${getBarkLevelLabel(levelIndex)} can't fit between the other levels. ` +
+            `Adjust the sliders first.`,
+        );
+        return;
+      }
+
+      const clamped = Math.max(lowerBound, Math.min(upperBound, target));
+      newThresholds[levelIndex] = {
+        ...newThresholds[levelIndex],
+        value: clamped,
+      };
+      setThresholds(newThresholds);
+      updateSettings({ thresholds: newThresholds });
+
+      Alert.alert(
+        "Set 🎤",
+        `Your bark was ${Math.round(measuredDelta)} dB above the room ` +
+          `(${describeNoiseFloor(floorDb)}).\n\n` +
+          `${getBarkLevelLabel(levelIndex)} now triggers at +${clamped} dB — ` +
+          `${deltaToSensitivityPercent(clamped)}% sensitivity.`,
+      );
     } catch (error) {
       console.error("Error stopping calibration:", error);
     } finally {
       setAudioActivity(null);
-      setPeakDB(-160);
+      setLiveSnrDb(0);
+      calibrationSamplesRef.current = [];
     }
   };
 
@@ -341,28 +471,26 @@ export function BarkLevelsAndMessagesCard() {
             <View style={styles.levelHeader}>
               <Text style={styles.levelName}>{getBarkLevelLabel(index)}</Text>
               <Text style={styles.levelPercent}>
-                {dBToPercent(threshold.value)}%
+                {deltaToSensitivityPercent(threshold.value)}%
               </Text>
             </View>
 
             <Text style={styles.stepLine}>
-              How loud a {threshold.id === "1" ? "soft" : "big"} bark has to be
-              to trigger
+              How much louder than the room a {index === 0 ? "soft" : "big"} bark
+              has to be (+{threshold.value} dB)
             </Text>
+            {/* Inverted dB: dragging right lowers the required delta. */}
             <Slider
               style={styles.slider}
-              minimumValue={percentToDB(1)}
-              maximumValue={percentToDB(100)}
+              minimumValue={SENSITIVITY_MIN_DB}
+              maximumValue={SENSITIVITY_MAX_DB}
               step={1}
-              value={threshold.value}
+              value={SENSITIVITY_MAX_DB + SENSITIVITY_MIN_DB - threshold.value}
               onValueChange={(v) => handleSliderChange(index, v)}
-              minimumTrackTintColor={
-                index === 1 && threshold.value === thresholds[0].value
-                  ? Colors.textLight
-                  : Colors.primary
-              }
+              minimumTrackTintColor={Colors.primary}
               onSlidingComplete={() => updateSettings({ thresholds })}
             />
+            <Text style={styles.hintLine}>{describeDelta(threshold.value)}</Text>
             <TouchableOpacity
               onPress={() =>
                 isCalibratingThis
@@ -385,13 +513,13 @@ export function BarkLevelsAndMessagesCard() {
                 ]}
               >
                 {isCalibratingThis
-                  ? `Listening… Peak ${dBToPercent(peakDB)}%`
-                  : "Mimic a bark to set sensitivity"}
+                  ? `Listening… +${liveSnrDb} dB above the room`
+                  : "Stay quiet, then mimic a bark"}
               </Text>
             </TouchableOpacity>
             <Text style={styles.stepLine}>
-              Voice that plays when {threshold.id === "1" ? "soft" : "big"} bark
-              is detected
+              Voice that plays when {index === 0 ? "soft" : "big"} bark is
+              detected
             </Text>
             {recording && !isRecordingThis && (
               <View style={styles.playerRow}>
@@ -490,6 +618,12 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xs,
   },
   slider: { width: "100%", height: 40 },
+  hintLine: {
+    fontSize: FontSizes.xs,
+    color: Colors.textLight,
+    fontStyle: "italic",
+    marginBottom: Spacing.xs,
+  },
   actionButton: {
     flexDirection: "row",
     alignItems: "center",

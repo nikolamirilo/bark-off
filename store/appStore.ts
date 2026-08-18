@@ -102,7 +102,7 @@ export const useAppStore = create<AppState>()(
         reports: state.reports,
         hasSeenTutorial: state.hasSeenTutorial,
       }),
-      version: 4,
+      version: 5,
       migrate: (persistedState: any, version: number) => {
         if (version === 0) {
           // Migration from v0 to v1: convert thresholds object to array
@@ -149,6 +149,27 @@ export const useAppStore = create<AppState>()(
               { id: "2", name: DogText.levelLoudBark, value: -15 },
             ];
           }
+        }
+        if (version < 5) {
+          // Migration to v5: thresholds changed from absolute dBFS (negative) to
+          // dB above the adaptive noise floor (positive, 6-24). Absolute values
+          // carry no information about what the user actually wanted — the whole
+          // point of the change is that absolute level was never a usable
+          // measure — so reset to defaults rather than mapping them across.
+          //
+          // Fill from DEFAULT_SETTINGS rather than {}: the earlier branches above
+          // can produce a settings object with thresholds but no cooldownSeconds,
+          // and an undefined cooldown makes the remaining-cooldown arithmetic NaN.
+          // `NaN <= 0` is false, so playback would be silently disabled forever.
+          persistedState.settings = {
+            ...DEFAULT_SETTINGS,
+            ...(persistedState.settings || {}),
+            // Deep-copied so the store never aliases the module-level default.
+            thresholds: DEFAULT_SETTINGS.thresholds.map((t) => ({ ...t })),
+          };
+          // Retired: was a documented 0.5-2.0 multiplier that nothing ever wrote,
+          // so it sat at 1.0 and its dB offset was permanently zero.
+          delete persistedState.settings.sensitivity;
         }
         return persistedState as AppState;
       },

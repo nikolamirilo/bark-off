@@ -4,9 +4,11 @@ import {
     LevelBreakdownChart,
     StatCard,
 } from '@/components/reports/ReportCharts';
+import { BackButton } from '@/components/ui/BackButton';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Colors, FontSizes, FontWeights, Spacing } from '@/constants/Colors';
+import { describeNoiseFloor } from '@/components/settings/utils';
 import { formatDuration, getImprovementMessage } from '@/services/reportService';
 import { useReports } from '@/store/appStore';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
@@ -17,9 +19,11 @@ import {
     Text,
     View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function ReportDetailScreen() {
     const router = useRouter();
+    const insets = useSafeAreaInsets();
     const { id } = useLocalSearchParams<{ id: string }>();
     const reports = useReports();
 
@@ -51,8 +55,13 @@ export default function ReportDetailScreen() {
     };
 
     return (
-        <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+        <ScrollView
+            style={styles.container}
+            contentContainerStyle={[styles.content, { paddingTop: insets.top + Spacing.sm }]}
+        >
             <Stack.Screen options={{ headerShown: false }} />
+            <BackButton style={styles.backButton} />
+
             {/* Header */}
             <View style={styles.header}>
                 <Text style={styles.title}>📊 Session Report</Text>
@@ -92,19 +101,34 @@ export default function ReportDetailScreen() {
 
             {/* Volume Stats */}
             <Card style={styles.volumeCard}>
+                {/* Shown as dB above the room's background noise. Absolute dBFS
+                    isn't comparable between rooms or sessions, because the mic's
+                    AGC rescales it. Older reports predate SNR, so fall back. */}
                 <View style={styles.volumeRow}>
                     <View style={styles.volumeStat}>
-                        <Text style={styles.volumeLabel}>Average Volume</Text>
-                        <Text style={styles.volumeValue}>{report.averageVolume} dB</Text>
+                        <Text style={styles.volumeLabel}>Average Loudness</Text>
+                        <Text style={styles.volumeValue}>
+                            {typeof report.averageSnrDb === 'number'
+                                ? `+${report.averageSnrDb} dB`
+                                : `${report.averageVolume} dB`}
+                        </Text>
                     </View>
                     <View style={styles.volumeDivider} />
                     <View style={styles.volumeStat}>
-                        <Text style={styles.volumeLabel}>Peak Volume</Text>
+                        <Text style={styles.volumeLabel}>Loudest Bark</Text>
                         <Text style={[styles.volumeValue, styles.peakValue]}>
-                            {report.peakVolume} dB
+                            {typeof report.peakSnrDb === 'number'
+                                ? `+${report.peakSnrDb} dB`
+                                : `${report.peakVolume} dB`}
                         </Text>
                     </View>
                 </View>
+                {typeof report.averageNoiseFloorDb === 'number' && (
+                    <Text style={styles.volumeFootnote}>
+                        Above background noise · room was a{' '}
+                        {describeNoiseFloor(report.averageNoiseFloorDb)}
+                    </Text>
+                )}
             </Card>
 
             {/* Timeline Chart */}
@@ -135,7 +159,9 @@ export default function ReportDetailScreen() {
                             </Text>
                             <Text style={styles.logCount}>{point.barkCount} woofs</Text>
                             <Text style={styles.logVolume}>
-                                Avg: {point.avgVolume.toFixed(1)} dB
+                                {typeof point.avgSnrDb === 'number'
+                                    ? `Avg: +${point.avgSnrDb.toFixed(1)} dB`
+                                    : `Avg: ${point.avgVolume.toFixed(1)} dB`}
                             </Text>
                         </View>
                     ))
@@ -163,7 +189,10 @@ const styles = StyleSheet.create({
     },
     content: {
         padding: Spacing.lg,
-        paddingTop: Spacing.xl,
+    },
+    backButton: {
+        alignSelf: 'flex-start',
+        marginBottom: Spacing.md,
     },
     header: {
         marginBottom: Spacing.lg,
@@ -204,6 +233,12 @@ const styles = StyleSheet.create({
     volumeLabel: {
         fontSize: FontSizes.sm,
         color: Colors.textSecondary,
+    },
+    volumeFootnote: {
+        fontSize: FontSizes.xs,
+        color: Colors.textLight,
+        textAlign: 'center',
+        marginTop: Spacing.sm,
     },
     volumeValue: {
         fontSize: FontSizes.xl,

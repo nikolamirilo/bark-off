@@ -74,7 +74,11 @@ export default function ReportsScreen() {
                     </View>
                     <View style={styles.reportStat}>
                         <Text style={styles.statIcon}>📈</Text>
-                        <Text style={styles.statText}>Peak: {report.peakVolume} dB</Text>
+                        <Text style={styles.statText}>
+                            {typeof report.peakSnrDb === 'number'
+                                ? `Peak: +${report.peakSnrDb} dB`
+                                : `Peak: ${report.peakVolume} dB`}
+                        </Text>
                     </View>
                 </View>
 
